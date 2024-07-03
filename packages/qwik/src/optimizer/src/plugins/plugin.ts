@@ -1,4 +1,4 @@
-import type { Rollup, Plugin, ViteDevServer } from 'vite';
+import type { Rollup, Plugin, ViteDevServer, HmrContext } from 'vite';
 import { hashCode } from '../../../core/util/hash_code';
 import { generateManifestFromBundles, getValidManifest } from '../manifest';
 import { createOptimizer } from '../optimizer';
@@ -623,11 +623,12 @@ export function createPlugin(optimizerOptions: OptimizerOptions = {}) {
       return;
     }
     const isSSR = !!transformOpts.ssr;
-    // TODO does this clear in dev mode ???
     const currentOutputs = isSSR ? serverTransformedOutputs : clientTransformedOutputs;
     if (currentOutputs.has(id)) {
+      // This is a QRL segment, and we don't need to process it any further
       return;
     }
+
     const optimizer = getOptimizer();
     const path = getPath();
 
@@ -730,7 +731,6 @@ export function createPlugin(optimizerOptions: OptimizerOptions = {}) {
               preserveSignature: 'allow-extension',
             });
           }
-          ctx.addWatchFile(key);
         }
       }
 
@@ -741,6 +741,8 @@ export function createPlugin(optimizerOptions: OptimizerOptions = {}) {
       for (const id of deps.values()) {
         await ctx.load({ id });
       }
+
+      ctx.addWatchFile(id);
 
       return {
         code: module.code,
@@ -863,6 +865,27 @@ export const manifest = ${JSON.stringify(manifest)};\n`;
     opts.sourcemap = sourcemap;
   }
 
+  // Only used in Vite dev mode
+  function handleHotUpdate(ctx: HmrContext) {
+    debug('handleHotUpdate()', ctx.file);
+
+    for (const mod of ctx.modules) {
+      const { id } = mod;
+      if (id) {
+        serverResults.delete(id);
+        clientResults.delete(id);
+      }
+      for (const dep of mod.info?.meta?.qwikdeps || []) {
+        serverTransformedOutputs.delete(dep);
+        clientTransformedOutputs.delete(dep);
+        const mod = ctx.server.moduleGraph.getModuleById(dep);
+        if (mod) {
+          ctx.server.moduleGraph.invalidateModule(mod);
+        }
+      }
+    }
+  }
+
   return {
     buildStart,
     createOutputAnalyzer,
@@ -885,6 +908,7 @@ export const manifest = ${JSON.stringify(manifest)};\n`;
     setSourceMapSupport,
     foundQrls,
     configureServer,
+    handleHotUpdate,
   };
 }
 
